@@ -1,0 +1,32 @@
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -t
+      - us-east1-docker.pkg.dev/$PROJECT_ID/webhook-repo/state-vamc-sync:$COMMIT_SHA
+      - .
+
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - us-east1-docker.pkg.dev/$PROJECT_ID/webhook-repo/state-vamc-sync:$COMMIT_SHA
+
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - state-vamc-sync
+      - --image=us-east1-docker.pkg.dev/$PROJECT_ID/webhook-repo/state-vamc-sync:$COMMIT_SHA
+      - --region=us-east1
+      - --platform=managed
+      - --no-allow-unauthenticated
+      - --port=8080
+      - --min-instances=0
+      - --concurrency=1
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+
+images:
+  - us-east1-docker.pkg.dev/$PROJECT_ID/webhook-repo/state-vamc-sync:$COMMIT_SHA
