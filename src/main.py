@@ -245,9 +245,12 @@ def apply_backfill(client):
 # 5. WRITEBACK — TextIt, filtered to contacts still present in itdo423_textit_full
 # ---------------------------------------------------------------------------
 
-def get_writeback_population(client):
+def get_writeback_population(client, limit=None):
     """state_vamc_writeback_pull.sql — resolved set filtered to contacts still in
-    TextIt (EXISTS in itdo423_textit_full), with something to write."""
+    TextIt (EXISTS in itdo423_textit_full), with something to write.
+    `limit` caps the population (Rule-23 single-record-before-bulk): pass 1 for
+    the first real TextIt run, then None (unbounded) after verifying that contact."""
+    limit_clause = f"LIMIT {int(limit)}" if limit is not None else ""
     rows = list(client.query(f"""
         SELECT s.uuid, s.set_state, s.set_vamc
         FROM `{STAGE_TABLE}` s
@@ -256,6 +259,7 @@ def get_writeback_population(client):
         )
         AND ( NULLIF(TRIM(s.set_state),'') IS NOT NULL OR NULLIF(TRIM(s.set_vamc),'') IS NOT NULL )
         ORDER BY s.uuid
+        {limit_clause}
     """).result())
     return rows
 
@@ -296,7 +300,7 @@ def writeback_textit(rows):
 # Core callable — lifts into the nightly orchestrator
 # ---------------------------------------------------------------------------
 
-def run_backfill(do_textit=True):
+def run_backfill(do_textit=True, writeback_limit=None):
     client = get_bq_client()
 
     rows = pull_population(client)
@@ -317,8 +321,10 @@ def run_backfill(do_textit=True):
         if not TEXTIT_TOKEN:
             writeback = {"skipped": "TEXTIT_TOKEN not set"}
         else:
-            wb_rows = get_writeback_population(client)
+            wb_rows = get_writeback_population(client, limit=writeback_limit)
             writeback = writeback_textit(wb_rows)
+            if writeback_limit is not None:
+                writeback["limited_to"] = int(writeback_limit)
 
     return {
         "status": "success",
@@ -345,10 +351,13 @@ def sync():
     body = request.get_json(force=True, silent=True) or {}
     if SYNC_PASSWORD and body.get("password") != SYNC_PASSWORD:
         return jsonify({"status": "error", "message": "Unauthorized"}), 403
-    # do_textit defaults true; pass {"do_textit": false} to run BQ-only (dry-er run)
+    # do_textit defaults true; pass {"do_textit": false} to run BQ-only (dry-er run).
+    # writeback_limit caps the TextIt writeback (Rule-23 single-record-before-bulk):
+    # pass {"writeback_limit": 1} for the first real TextIt run, omit for unbounded.
     do_textit = body.get("do_textit", True)
+    writeback_limit = body.get("writeback_limit", None)
     try:
-        result = run_backfill(do_textit=do_textit)
+        result = run_backfill(do_textit=do_textit, writeback_limit=writeback_limit)
         return jsonify(result), 200
     except Exception as e:
         logger.exception("state-vamc backfill failed")

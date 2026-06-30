@@ -22,6 +22,9 @@ round-trips.
 5. **WRITEBACK** — push resolved values to TextIt for contacts STILL present in
    `itdo423_textit_full` (bq_only contacts 400 on TextIt write). Throttled
    ~4 req/sec. Pass `{"do_textit": false}` to skip writeback (BQ-only run).
+   Pass `{"writeback_limit": 1}` to cap the TextIt writeback to N contacts
+   (Rule-23 single-record-before-bulk) — use 1 for the first real TextIt run,
+   omit for unbounded.
 
 `/health` (GET) → `{"status":"ok"}`. Both endpoints require GCP auth; `/sync`
 additionally checks a body password.
