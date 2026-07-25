@@ -1,4 +1,5 @@
 import os
+import re
 import time
 import logging
 from datetime import datetime, timezone
@@ -57,7 +58,7 @@ TEXTIT_CONTACTS_URL = "https://textit.com/api/v2/contacts.json"
 
 SYNC_PASSWORD = os.environ.get("SYNC_PASSWORD", "")
 
-WRITEBACK_THROTTLE_SEC = float(os.environ.get("WRITEBACK_THROTTLE_SEC", "0.25"))  # ~4/sec
+WRITEBACK_THROTTLE_SEC = float(os.environ.get("WRITEBACK_THROTTLE_SEC", "1.44"))  # >=1.44s => <=2500/hr (ITDO-454; was 0.25 = ~4x over budget)
 ZIP_THROTTLE_SEC = float(os.environ.get("ZIP_THROTTLE_SEC", "0.05"))
 
 # itdo424_backfill_pull.sql — lifted verbatim. The population to resolve.
@@ -264,6 +265,36 @@ def get_writeback_population(client, limit=None):
     return rows
 
 
+def _textit_post_writeback(url, payload, headers):
+    """POST a single contact field write, with the TextIt 2,500-req/hr rate
+    limit handled per ITDO-454.
+
+    A 429 is NOT a per-contact failure — it means "wait N seconds and try the
+    same write again." Parse the 'available in N seconds' body, sleep N+3, and
+    retry the SAME request until it succeeds. This HOLDS the writeback (and the
+    nightly chain) until the throttle clears, by design: downstream vamc-sync
+    derives display names from vamc_presumed, so a throttled write must land
+    tonight, not be deferred — dropping it would silently under-process.
+
+    Any OTHER error (400/404/500, network) IS a real per-contact failure and is
+    raised to the caller, which records it in the errors list and moves on — the
+    prior behavior, preserved. Only 429 loops."""
+    attempt = 0
+    while True:
+        attempt += 1
+        resp = requests.post(url, json=payload, headers=headers, timeout=30)
+        if resp.status_code == 429:
+            wait = 60
+            m = re.search(r"available in (\d+)", resp.text)
+            if m:
+                wait = int(m.group(1)) + 3
+            logger.warning(f"  textit 429 on writeback; sleeping {wait}s (attempt {attempt})")
+            time.sleep(wait)
+            continue
+        resp.raise_for_status()
+        return resp
+
+
 def writeback_textit(rows):
     headers = {"Authorization": f"Token {TEXTIT_TOKEN}", "Content-Type": "application/json"}
     ok = 0
@@ -278,11 +309,10 @@ def writeback_textit(rows):
         if not fields:
             continue
         try:
-            resp = requests.post(
+            _textit_post_writeback(
                 f"{TEXTIT_CONTACTS_URL}?uuid={r['uuid']}",
-                json={"fields": fields}, headers=headers, timeout=30,
+                {"fields": fields}, headers,
             )
-            resp.raise_for_status()
             ok += 1
         except Exception as e:
             bad += 1
