@@ -23,12 +23,12 @@ logger = logging.getLogger(__name__)
 #                map; skip empties/failures (no blank writes).
 #                (resolve_state_vamc_backfill.ps1)
 #   3. STAGE   : load the per-contact resolved set into
-#                RESPONSES.state_vamc_backfill_stage (all STRING, WRITE_TRUNCATE).
-#   4. LOG+MERGE: log changed cells to state_vamc_backfill_log (NOT
-#                itdo423_sync_diff — this is a backfill, not the sync), then MERGE
+#                OPS.state_vamc_stage (all STRING, WRITE_TRUNCATE).
+#   4. LOG+MERGE: log changed cells to state_vamc_log (NOT
+#                contacts_sync_diff — this is a backfill, not the sync), then MERGE
 #                non-empty values into users. (itdo424_backfill_bq.sql, verbatim)
 #   5. WRITEBACK: push resolved values to TextIt for contacts STILL PRESENT in
-#                itdo423_textit_full (bq_only contacts 400 on TextIt write).
+#                contacts_sync_textit_staging (bq_only contacts 400 on TextIt write).
 #                Throttled ~4 req/sec. (state_vamc_writeback_pull.sql +
 #                textit_writeback_state_vamc.ps1)
 #
@@ -39,16 +39,17 @@ logger = logging.getLogger(__name__)
 #
 # Ordering in the nightly orchestrator: runs AFTER contacts-sync (so the sync
 # can't clobber these writes) and BEFORE vamc-sync (which derives display names
-# from vamc_presumed). contacts-sync freshly rewrites itdo423_textit_full each
+# from vamc_presumed). contacts-sync freshly rewrites its staging table each
 # run, so the WRITEBACK EXISTS-filter is current.
 # ---------------------------------------------------------------------------
 
 BQ_PROJECT = os.environ.get("GCP_PROJECT", "early-alert-responses")
-BQ_DATASET = "RESPONSES"
-STAGE_TABLE = f"{BQ_PROJECT}.{BQ_DATASET}.state_vamc_backfill_stage"
-LOG_TABLE = f"{BQ_PROJECT}.{BQ_DATASET}.state_vamc_backfill_log"
+BQ_DATASET = "RESPONSES"          # core warehouse: the users table only
+OPS_DATASET = "OPS"               # operational objects for the nightly pipeline
+STAGE_TABLE = f"{BQ_PROJECT}.{OPS_DATASET}.state_vamc_stage"
+LOG_TABLE = f"{BQ_PROJECT}.{OPS_DATASET}.state_vamc_log"
 USERS_TABLE = f"{BQ_PROJECT}.{BQ_DATASET}.users"
-TEXTIT_FULL_TABLE = f"{BQ_PROJECT}.{BQ_DATASET}.itdo423_textit_full"
+TEXTIT_FULL_TABLE = f"{BQ_PROJECT}.{OPS_DATASET}.contacts_sync_textit_staging"
 
 ZIP_LOOKUP_URL = os.environ.get("ZIP_LOOKUP_URL", "https://zip-lookup-853176470965.us-east1.run.app/")
 ZIP_LOOKUP_TOKEN = os.environ.get("ZIP_LOOKUP_TOKEN", "")  # only if zip-lookup enforces it
@@ -170,7 +171,7 @@ def build_resolved(rows, zip_map):
 
 
 # ---------------------------------------------------------------------------
-# 3. STAGE — load resolved set into state_vamc_backfill_stage (WRITE_TRUNCATE)
+# 3. STAGE — load resolved set into state_vamc_stage (WRITE_TRUNCATE)
 # ---------------------------------------------------------------------------
 
 def stage_resolved(client, resolved):
@@ -243,12 +244,12 @@ def apply_backfill(client):
 
 
 # ---------------------------------------------------------------------------
-# 5. WRITEBACK — TextIt, filtered to contacts still present in itdo423_textit_full
+# 5. WRITEBACK — TextIt, filtered to contacts still present in the staging table
 # ---------------------------------------------------------------------------
 
 def get_writeback_population(client, limit=None):
     """state_vamc_writeback_pull.sql — resolved set filtered to contacts still in
-    TextIt (EXISTS in itdo423_textit_full), with something to write.
+    TextIt (EXISTS in contacts_sync_textit_staging), with something to write.
     `limit` caps the population (Rule-23 single-record-before-bulk): pass 1 for
     the first real TextIt run, then None (unbounded) after verifying that contact."""
     limit_clause = f"LIMIT {int(limit)}" if limit is not None else ""

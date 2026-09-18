@@ -15,12 +15,12 @@ round-trips.
 2. **RESOLVE** — one zip-lookup call per DISTINCT zip; build zip→(state, vamc)
    map. Skip empties/failures — no blank writes (stricter than the live flow).
 3. **STAGE** — load per-contact resolved set into
-   `RESPONSES.state_vamc_backfill_stage` (all STRING, WRITE_TRUNCATE).
-4. **LOG + MERGE** — log changed cells to `RESPONSES.state_vamc_backfill_log`
-   (own table, NOT itdo423_sync_diff — this is a backfill, not the sync), then
+   `OPS.state_vamc_stage` (all STRING, WRITE_TRUNCATE).
+4. **LOG + MERGE** — log changed cells to `OPS.state_vamc_log`
+   (own table, NOT contacts_sync_diff — this is a backfill, not the sync), then
    MERGE non-empty values into `users`. (itdo424_backfill_bq.sql, verbatim.)
 5. **WRITEBACK** — push resolved values to TextIt for contacts STILL present in
-   `itdo423_textit_full` (bq_only contacts 400 on TextIt write). Throttled
+   `OPS.contacts_sync_textit_staging` (bq_only contacts 400 on TextIt write). Throttled
    ~4 req/sec. Pass `{"do_textit": false}` to skip writeback (BQ-only run).
    Pass `{"writeback_limit": 1}` to cap the TextIt writeback to N contacts
    (Rule-23 single-record-before-bulk) — use 1 for the first real TextIt run,
@@ -41,7 +41,7 @@ additionally checks a body password.
 
 Runs AFTER contacts-sync (so the TextIt-wins sync can't clobber these writes)
 and BEFORE vamc-sync (which derives `vamc_display_name` from `vamc_presumed`).
-contacts-sync freshly rewrites `itdo423_textit_full` each run, so the WRITEBACK
+contacts-sync freshly rewrites `OPS.contacts_sync_textit_staging` each run, so the WRITEBACK
 EXISTS-filter is current. `run_backfill()` is the callable core for the unified
 nightly orchestrator (backup → contacts-sync → state/vamc → vamc-sync).
 
@@ -64,7 +64,7 @@ It calls zip-lookup (Cloud Run) — if zip-lookup requires auth, the SA needs
 ## Tables
 
 - `RESPONSES.users` — backfill target (state, vamc_presumed).
-- `RESPONSES.state_vamc_backfill_stage` — resolved set (WRITE_TRUNCATE each run).
-- `RESPONSES.state_vamc_backfill_log` — per-cell change log (audit/rollback).
-- `RESPONSES.itdo423_textit_full` — read for the writeback EXISTS-filter
+- `OPS.state_vamc_stage` — resolved set (WRITE_TRUNCATE each run).
+- `OPS.state_vamc_log` — per-cell change log (audit/rollback).
+- `OPS.contacts_sync_textit_staging` — read for the writeback EXISTS-filter
   (written by contacts-sync).
